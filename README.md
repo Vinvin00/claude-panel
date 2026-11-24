@@ -42,3 +42,7 @@ New Claude sessions show up straight away. Sessions that were already open appea
 ```
 
 Then delete `~/Applications/Claude Panel.app`.
+
+## License
+
+MIT. Do what you like with it.
