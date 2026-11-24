@@ -153,7 +153,7 @@ def desktop_record(sid, known=None):
             d = json.loads(txt)
             prof = f.split("/Application Support/")[1].split("/")[0]
             return {"desktopId": d.get("sessionId"), "dtitle": d.get("title") or "",
-                    "profile": prof, "record": f}
+                    "profile": prof, "record": f, "model": d.get("model") or "", "effort": d.get("effort") or ""}
     return None
 
 
@@ -162,8 +162,8 @@ def locate(s, sid, ev):
         pid, tty = claude_process()
         s.update(pid=pid, tty=tty or "")
     desktop = s.get("tty") in ("??", "")
-    # look the record up once; refresh the title when a turn ends (the app names sessions after turn 1)
-    if desktop and (not s.get("desktopId") or ev == "Stop"):
+    # look the record up once; refresh at the start and end of each turn (title, model, effort can change)
+    if desktop and (not s.get("desktopId") or ev in ("Stop", "UserPromptSubmit")):
         rec = desktop_record(sid, s.get("record"))
         if rec:
             s.update(rec)

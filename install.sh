@@ -5,11 +5,12 @@
 set -e
 cd "$(dirname "$0")"
 HOOK="/usr/bin/python3 $(pwd)/hook.py"
+STATUS="/usr/bin/python3 $(pwd)/statusline.py"
 SETTINGS="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"  # override only for testing
 
-/usr/bin/python3 - "$SETTINGS" "$HOOK" "$1" <<'EOF'
+/usr/bin/python3 - "$SETTINGS" "$HOOK" "$1" "$STATUS" <<'EOF'
 import json, os, shutil, sys
-path, cmd, mode = sys.argv[1], sys.argv[2], sys.argv[3]
+path, cmd, mode, status = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 os.makedirs(os.path.dirname(path), exist_ok=True)
 d = json.load(open(path)) if os.path.exists(path) else {}
 if os.path.exists(path):
@@ -32,6 +33,15 @@ if mode != "--remove":
         if ev in ("PreToolUse", "PostToolUse", "PermissionRequest"):
             entry["matcher"] = "*"
         hooks.setdefault(ev, []).append(entry)
+# the status line feeds the panel model, effort and usage limits; never replace someone's own
+ours = "claude-panel" in d.get("statusLine", {}).get("command", "")
+if mode == "--remove":
+    if ours:
+        del d["statusLine"]
+elif "statusLine" not in d or ours:
+    d["statusLine"] = {"type": "command", "command": status}
+else:
+    print("You already have a status line, so it stays. Usage rings need statusline.py as the status line.")
 json.dump(d, open(path, "w"), indent=2)
 EOF
 

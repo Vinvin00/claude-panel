@@ -24,6 +24,8 @@ struct Session: Decodable, Identifiable {
     var turnSecs: Double?
     var finishedAt: Double?
     var cfg: String?          // CLAUDE_CONFIG_DIR of a terminal session
+    var model: String?        // "claude-opus-5-5" (app) or "Opus 5.5" (status line)
+    var effort: String?
 
     var folder: String { URL(fileURLWithPath: cwd ?? "?").lastPathComponent }
     var name: String { (dtitle?.isEmpty == false) ? dtitle! : folder }
@@ -96,7 +98,7 @@ final class Store: ObservableObject {
     private let scanner = UsageScanner()
     var onChange: (() -> Void)?
     private var lastStatus: [String: String]? = nil
-    private var records: [String: (id: String, profile: String, title: String)?] = [:]  // nil = looked, none
+    private var records: [String: (id: String, profile: String, title: String, model: String, effort: String)?] = [:]
 
     init(settings: Settings) {
         self.settings = settings
@@ -143,12 +145,22 @@ final class Store: ObservableObject {
             return true
         }
         // sessions the hook saw before it learned the desktop lookup: fill in title and target once
-        for i in out.indices where out[i].desktopId == nil && ((out[i].tty ?? "").isEmpty || out[i].tty == "??") {
+        for i in out.indices where (out[i].desktopId == nil || (out[i].model ?? "").isEmpty)
+            && ((out[i].tty ?? "").isEmpty || out[i].tty == "??") {
             if records[out[i].id] == nil { records[out[i].id] = .some(desktopRecord(out[i].id)) }
             if let rec = records[out[i].id] ?? nil {
-                out[i].desktopId = rec.id
+                if out[i].desktopId == nil { out[i].desktopId = rec.id }
                 out[i].profile = rec.profile
                 if (out[i].dtitle ?? "").isEmpty { out[i].dtitle = rec.title }
+                if (out[i].model ?? "").isEmpty { out[i].model = rec.model; out[i].effort = rec.effort }
+            }
+        }
+        for i in out.indices {
+            let f = base.appendingPathComponent("status/\(out[i].id).json")
+            if let d = try? Data(contentsOf: f), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+               let m = o["model"] as? String, !m.isEmpty {
+                out[i].model = m
+                out[i].effort = o["effort"] as? String
             }
         }
         let rank = ["waiting": 0, "working": 1, "idle": 2, "done": 3]
@@ -328,6 +340,10 @@ struct Row: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(s.id, forType: .string)
                 }
+            }
+            if let tag = modelTag(s) {
+                Text(tag).font(.system(size: 11)).foregroundStyle(Ink.meta).lineLimit(1)
+                    .padding(.leading, 16).padding(.top, -3)
             }
             if waiting {
                 VStack(alignment: .leading, spacing: 6) {
@@ -622,9 +638,9 @@ struct PanelView: View {
 }
 
 /// The desktop app's own record for a session: its local_ id and which copy (Claude or Claude-Work).
-func desktopRecord(_ cliId: String) -> (id: String, profile: String, title: String)? {
+func desktopRecord(_ cliId: String) -> (id: String, profile: String, title: String, model: String, effort: String)? {
     let fm = FileManager.default
-    for profile in ["Claude", "Claude-Work"] {
+    for profile in Accounts.shared.list.map(\.dir) {
         let root = URL(fileURLWithPath: NSHomeDirectory())
             .appendingPathComponent("Library/Application Support/\(profile)/claude-code-sessions")
         guard let en = fm.enumerator(at: root, includingPropertiesForKeys: nil) else { continue }
@@ -633,7 +649,7 @@ func desktopRecord(_ cliId: String) -> (id: String, profile: String, title: Stri
                   data.range(of: Data(cliId.utf8)) != nil,
                   let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let id = o["sessionId"] as? String else { continue }
-            return (id, profile, o["title"] as? String ?? "")
+            return (id, profile, o["title"] as? String ?? "", o["model"] as? String ?? "", o["effort"] as? String ?? "")
         }
     }
     return nil
@@ -656,6 +672,7 @@ final class Accounts: ObservableObject {
     static let shared = Accounts()
     @Published var list: [Account] = []
     @Published var running: Set<String> = []   // dirs of the copies that are open now
+    @Published var limits: [String: Limits] = [:]  // by dir, from statusline.py
     private var pids: [String: pid_t] = [:]
     private let file = base.appendingPathComponent("accounts.json")
     private let support = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
@@ -704,7 +721,9 @@ final class Accounts: ObservableObject {
                     found["Claude"] = pid
                 }
             }
+            let lim = Dictionary(uniqueKeysWithValues: (self?.list ?? []).compactMap { a in Limits.load(a).map { (a.dir, $0) } })
             DispatchQueue.main.async {
+                self?.limits = lim
                 self?.pids = found
                 if self?.running != Set(found.keys) { self?.running = Set(found.keys) }
             }
@@ -806,11 +825,15 @@ struct AccountsRow: View {
                     HStack(spacing: 6) {
                         Circle().fill(on ? Ink.green : Color(white: 0.4)).frame(width: 6, height: 6)
                         Text(a.name)
+                        if let lim = accounts.limits[a.dir], let used = lim.five {
+                            UsageRing(used: used)
+                            Text("\(Int(used.rounded()))%").foregroundStyle(Ink.secondary).monospacedDigit()
+                        }
                     }
                 }
                 .buttonStyle(Pill(small: true))
-                .help(on ? "\(a.name) is open: bring it forward (right-click for more)"
-                         : "\(a.name) is closed: open it (right-click for more)")
+                .help((on ? "\(a.name) is open: bring it forward" : "\(a.name) is closed: open it")
+                      + "\n" + (accounts.limits[a.dir]?.help ?? "Usage shows here after a terminal session on this account"))
                 .contextMenu {
                     Button(on ? "Bring Forward" : "Open") { accounts.open(a) }
                     Button("New Terminal on \(a.name)") { accounts.terminal(a) }
@@ -823,6 +846,72 @@ struct AccountsRow: View {
             Button { accounts.addInteractively() } label: { Image(systemName: "plus") }
                 .buttonStyle(Pill(small: true)).help("Add another Claude account")
         }
+    }
+}
+
+/// "claude-opus-5-5" -> "Opus 5.5" (names that are already pretty pass through), plus the effort.
+func modelTag(_ s: Session) -> String? {
+    guard var m = s.model, !m.isEmpty else { return nil }
+    if m.hasPrefix("claude-") {
+        let parts: [String] = String(m.dropFirst(7)).replacingOccurrences(of: "[1m]", with: "")
+            .components(separatedBy: "-")
+            .filter { !($0.count == 8 && $0.allSatisfy(\.isNumber)) }  // drop date stamps
+        if let family = parts.first {
+            m = family.capitalized + " " + parts.dropFirst().joined(separator: ".")
+        }
+    }
+    let e = s.effort ?? ""
+    return e.isEmpty ? m.trimmingCharacters(in: .whitespaces) : "\(m.trimmingCharacters(in: .whitespaces)) · \(e)"
+}
+
+/// The latest 5-hour and weekly limits for one account, as saved by statusline.py.
+struct Limits {
+    var fiveHour: Double? = nil
+    var fiveReset: Double? = nil
+    var week: Double? = nil
+    var weekReset: Double? = nil
+    var updated: Double = 0
+
+    static func load(_ a: Account) -> Limits? {
+        let key = URL(fileURLWithPath: a.cli).resolvingSymlinksInPath().lastPathComponent
+        guard let d = try? Data(contentsOf: base.appendingPathComponent("limits/\(key).json")),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
+        let five = o["five_hour"] as? [String: Any], week = o["seven_day"] as? [String: Any]
+        return Limits(fiveHour: five?["used_percentage"] as? Double, fiveReset: five?["resets_at"] as? Double,
+                      week: week?["used_percentage"] as? Double, weekReset: week?["resets_at"] as? Double,
+                      updated: o["updated"] as? Double ?? 0)
+    }
+
+    /// Only trust a number while its window hasn't reset and it was seen in the last 6 hours.
+    var five: Double? {
+        let now = Date().timeIntervalSince1970
+        guard let f = fiveHour, now - updated < 6 * 3600, (fiveReset ?? .infinity) > now else { return nil }
+        return f
+    }
+
+    var help: String {
+        let now = Date().timeIntervalSince1970
+        func line(_ name: String, _ v: Double?, _ r: Double?) -> String? {
+            guard let v, (r ?? .infinity) > now else { return nil }
+            let left = r.map { " · resets in " + clock($0 - now).replacingOccurrences(of: #" \d+s$"#, with: "", options: .regularExpression) } ?? ""
+            return "\(name): \(Int(v.rounded()))% used\(left)"
+        }
+        let lines = [line("5-hour limit", fiveHour, fiveReset), line("Weekly limit", week, weekReset)].compactMap { $0 }
+        return lines.isEmpty ? "No recent usage data" : lines.joined(separator: "\n") + "\nUpdated " + ago(now - updated)
+    }
+}
+
+/// A small ring: how much of the 5-hour limit is used.
+struct UsageRing: View {
+    let used: Double
+    var color: Color { used >= 85 ? Ink.red : used >= 60 ? Ink.amber : Ink.green }
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.white.opacity(0.15), lineWidth: 2)
+            Circle().trim(from: 0, to: min(1, used / 100)).stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 11, height: 11)
     }
 }
 
