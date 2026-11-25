@@ -35,7 +35,7 @@ New Claude sessions show up straight away. Sessions that were already open appea
 
 ## Good to know
 
-- When Claude asks you something and you're not in the Claude window, it waits up to 5 minutes for your answer in the panel. If you go back to Claude instead, it stops waiting so you can answer there.
+- When Claude asks you something, it waits up to 5 minutes for your answer in the panel. While it waits, the Claude window can't take your reply, so if you'd rather answer there, click "Answer in app" in the panel first.
 - The usage rings come from Claude Code's status line, which only runs in the terminal. So an account's ring fills in once you've used Claude in a terminal on that account, and it hides itself when the number gets old. The desktop app keeps its own numbers to itself.
 - Extra accounts each get their own Claude window. When you sign in to one, use "Continue with email" and type the code into that window. Google sign-in tends to open your main Claude window instead.
 - I built this for myself on macOS 26, so that's the only place it's been tested. Older versions may not work.
