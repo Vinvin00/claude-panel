@@ -44,6 +44,27 @@ def clear_requests(sid):
                 pass
 
 
+def heal_panel():
+    """A panel that is running but has stopped updating its heartbeat is frozen: restart it.
+    A panel that is not running was quit on purpose, so it is left alone."""
+    after = float(os.environ.get("PANEL_HEAL_AFTER", 60))
+    alive, healed = os.path.join(BASE, "alive"), os.path.join(BASE, "healed")
+    if not os.path.exists(alive):
+        return
+    beat = time.time() - os.path.getmtime(alive)
+    since = time.time() - os.path.getmtime(healed) if os.path.exists(healed) else 1e9
+    if beat < after or since < 30:   # healthy, or another hook just did this
+        return
+    running = subprocess.run(["pgrep", "-x", "ClaudePanel"], capture_output=True, text=True).stdout.split()
+    if not running:
+        return
+    open(healed, "w").close()
+    subprocess.run(["pkill", "-9", "-x", "ClaudePanel"])
+    time.sleep(0.5)
+    subprocess.Popen(["open", os.path.expanduser("~/Applications/Claude Panel.app")],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def panel_alive():
     try:  # the panel touches this file every second
         return time.time() - os.path.getmtime(os.path.join(BASE, "alive")) < 5
@@ -176,6 +197,11 @@ def main():
     # subagents share session_id, so only clear when the whole turn is over
     if ev in ("Stop", "UserPromptSubmit", "SessionEnd"):
         clear_requests(sid)
+    if ev in ("SessionStart", "UserPromptSubmit"):
+        try:
+            heal_panel()
+        except Exception:
+            pass
 
     if ev == "SessionEnd":
         try:

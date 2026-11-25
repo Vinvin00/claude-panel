@@ -1095,6 +1095,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastInside = Date()
     var animating = false
     let collapseDelay = 1.5   // seconds after the pointer leaves
+    var holdOpenUntil = Date.distantPast   // set when the app is reopened, so the panel stays out a few seconds
+    var ticks = 0
+    var activity: NSObjectProtocol?
+    var wantsPanel: Bool { UserDefaults.standard.object(forKey: "showPanel") as? Bool ?? true }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         panel = KeyPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 80),
@@ -1122,6 +1126,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         _ = Accounts.shared
         refreshLoginItems()
 
+        makeStatusItem()
+        store.onChange = { [weak self] in self?.updateIcon() }
+        updateIcon()
+
+        // macOS can nap an accessory app or drop its windows around sleep, lock and display changes
+        activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
+                                                         reason: "Keeps the panel responsive")
+        let wake = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification,
+                     NSWorkspace.sessionDidBecomeActiveNotification] {
+            wake.addObserver(self, selector: #selector(revive), name: name, object: nil)
+        }
+        NotificationCenter.default.addObserver(self, selector: #selector(revive),
+                                               name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    }
+
+    func makeStatusItem() {
+        if let old = item { NSStatusBar.system.removeStatusItem(old) }
         // New icons land on the far left, often behind the notch: start it near the clock instead.
         // (macOS keeps this spot; Cmd-drag the icon to move it.)
         UserDefaults.standard.register(defaults: ["NSStatusItem Preferred Position ClaudePanel": 330])
@@ -1130,8 +1152,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         item.menu = menu
-        store.onChange = { [weak self] in self?.updateIcon() }
         updateIcon()
+    }
+
+    /// Put the panel and the menu bar icon back if macOS dropped them, and pull the panel onto a
+    /// screen that still exists.
+    @objc func revive() {
+        if item?.button?.window == nil { makeStatusItem() }
+        guard wantsPanel else { return }
+        if let screen = NSScreen.main, !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(panel.frame) }) {
+            let f = screen.visibleFrame
+            panel.setFrameTopLeftPoint(NSPoint(x: f.maxX - panel.frame.width, y: f.maxY - 20))
+        }
+        panel.orderFrontRegardless()
+    }
+
+    /// Opening the app again (Spotlight, Finder, Dock) brings the panel out and keeps it out a few seconds.
+    /// Without this a second launch of an app that has no Dock icon would look like nothing happened.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        setPanel(true)
+        revive()
+        holdOpenUntil = Date().addingTimeInterval(8)
+        if settings.autoHide && dock.collapsed && !animating { expand() }
+        return true
     }
 
     // Size the window to its content; with auto-hide it sits flush against the right screen edge.
@@ -1148,6 +1191,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func tick() {
+        ticks += 1
+        // about every 5 seconds: cheap check that the windows are still there
+        if ticks % 25 == 0, item?.button?.window == nil || (wantsPanel && !panel.isVisible) { revive() }
+        if holdOpenUntil > Date() { lastInside = Date() }
         guard panel.isVisible else { return }
         if settings.autoHide {
             let inside = panel.frame.insetBy(dx: -3, dy: -3).contains(NSEvent.mouseLocation)
