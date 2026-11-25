@@ -70,11 +70,12 @@ def ask_panel(sid, kind, payload, off_flag, wait=WAIT_SECS, s=None):
     """Put a request in the panel and wait for the answer text.
     None = no answer (timeout, turned off, panel closed).
     "__app__" = the user is in (or went to) the session's own app: let them answer there.
-    Holding while they are in the app would leave the app waiting on the panel (it looks frozen)."""
+    While it holds, the app waits for this answer; "Answer in app" in the panel lets go at once."""
     if os.path.exists(os.path.join(BASE, off_flag)) or not panel_alive():
         return None
-    if s is not None and in_own_app(s):
-        return "__app__"
+    # Let go only when the user switches INTO the session's app during the question (they'll answer
+    # there). Already being in it when the question arrives still shows the buttons in the panel.
+    was_in_app = s is not None and in_own_app(s)
     rid = f"{sid}~{time.time_ns()}"
     req = os.path.join(REQS, rid + ".json")
     ans = os.path.join(REQS, rid + ".answer")
@@ -86,8 +87,11 @@ def ask_panel(sid, kind, payload, off_flag, wait=WAIT_SECS, s=None):
             if os.path.exists(ans):
                 return open(ans).read().strip()
             n += 1
-            if s is not None and n % 3 == 0 and in_own_app(s):
-                return "__app__"
+            if s is not None and n % 3 == 0:
+                now_in_app = in_own_app(s)
+                if now_in_app and not was_in_app:
+                    return "__app__"
+                was_in_app = now_in_app
             time.sleep(0.3)
     finally:
         for p in (req, ans):

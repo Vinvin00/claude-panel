@@ -2,6 +2,8 @@
 
 A tiny panel for your Mac that keeps an eye on your Claude Code sessions while you do other things.
 
+![Claude Panel in action](media/demo.gif)
+
 It sits as a thin tab on the right edge of the screen with one little light per session. Green means Claude is working, orange means it needs you, grey means it's done. Hover the tab and the full panel slides out, where you can see what each session is up to and answer it right there.
 
 ## What it does
